@@ -5,12 +5,14 @@ import com.pengrad.telegrambot.model.request.KeyboardButton
 import com.pengrad.telegrambot.model.request.ParseMode
 import com.pengrad.telegrambot.model.request.ReplyKeyboardMarkup
 import com.pengrad.telegrambot.request.SendMessage
+import com.pengrad.telegrambot.request.SendPhoto
 import data.FactsData
 import data.LinesData
 import data.StationData
 import models.MetroFact
 import models.MetroStation
 import models.Route
+import java.io.File
 
 class MetroBot(private val bot: TelegramBot) {
 
@@ -37,9 +39,10 @@ class MetroBot(private val bot: TelegramBot) {
                 "/start" -> hello(chatId)
                 "/help" -> sendHelp(chatId)
                 "/reset" -> resetProgress(chatId)
-                "🗺️ Построить маршрут" -> startRouteBuilding(chatId)
+                "\uD83D\uDCCD Построить маршрут" -> startRouteBuilding(chatId)
                 "🚉 Информация о станции" -> askForStationName(chatId)
                 "💡 Случайный факт" -> randomFact(chatId)
+                "🗺️ Схема метрополитена" -> showMap(chatId)
                 "ℹ️ Помощь" -> sendInfo(chatId)
                 "❌ Отменить поиск" -> cancelSearch(chatId)
                 "❌ Отменить построение маршрута" -> cancelRoute(chatId)
@@ -56,6 +59,35 @@ class MetroBot(private val bot: TelegramBot) {
             }
         }
     }
+
+    private fun showMap(chatId: Long) {
+        try {
+            val mapPath = "src/main/resources/map/metromap.jpeg"
+            val mapFile = File(mapPath)
+
+            if (mapFile.exists()) {
+                val mapMessage = SendPhoto(chatId, mapFile)
+                    .caption(
+                        """
+                    *🗺️ Схема Петербургского метрополитена*
+                
+                    🎯 *Чтобы построить маршрут -* нажмите соответствующую кнопку ниже ⬇️
+                """.trimIndent()
+                    )
+                    .parseMode(ParseMode.Markdown)
+
+                bot.execute(mapMessage)
+
+            } else {
+                showMainMenu(chatId)
+            }
+
+        } catch (e: Exception) {
+            println("Ошибка отправки схемы метро: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+
 
     private fun hello(chatId: Long) {
         //создаем 2 сообщения: Приветствие и "выбирите действие" с кнопками
@@ -87,8 +119,9 @@ class MetroBot(private val bot: TelegramBot) {
         usersSearchingStations.remove(chatId) // Выходим из режима поиска
 
         val keyboard = ReplyKeyboardMarkup(
-            arrayOf(KeyboardButton("🗺️ Построить маршрут")),
+            arrayOf(KeyboardButton("\uD83D\uDCCD Построить маршрут")),
             arrayOf(KeyboardButton("🚉 Информация о станции")),
+            arrayOf(KeyboardButton("🗺️ Схема метрополитена")),
             arrayOf(
                 KeyboardButton("💡 Случайный факт"),
                 KeyboardButton("ℹ️ Помощь")
@@ -113,12 +146,15 @@ class MetroBot(private val bot: TelegramBot) {
         *Основные команды:*
         /start - Начать работу с ботом
         /help - Показать эту справку
+        /reset - Сбросить прогресс по фактам 
 
-        *Быстрые действия через кнопки ниже* ⬇️
-        🗺️ Построить маршрут - about
-        🚉 Информация о станции - about
-        💡 Случайный факт - about
-        ℹ️ Помощь - about
+        *Действия через кнопки меню ниже* ⬇️
+        
+         📍 *Построить маршрут* - оптимальный маршрут между выбранными станциями
+         🚉 *Информация о станции* - подробная информация о выбранной станции
+         🗺️ *Схема метрополитена* - получить схему метрополитена
+         💡 *Случайный факт* - узнать много интересного о метрополитене
+         ℹ️ *Помощь* - полезная информация
 
         """.trimIndent()
         )
@@ -457,14 +493,15 @@ class MetroBot(private val bot: TelegramBot) {
         bot.execute(message)
     }
 
-    //todo подумать и сделать красивее
     private fun sendUnknownCommand(chatId: Long) {
         val unknowMessage = SendMessage(
             chatId,
             """
-        🤔 Неизвестная команда !
+                🤔 Не могу распознать ваш запрос!
 
-         Перезапустить бота - /start 
+                Для удобства воспользуйтесь кнопками меню ниже ⬇️  
+
+                Чтобы начать общение заново, перезапустите бота - /start 
                 """.trimIndent()
         )
             .parseMode(ParseMode.Markdown)
@@ -542,8 +579,13 @@ class MetroBot(private val bot: TelegramBot) {
 
     private fun findRouteOnSameLine(chatId: Long, stationFrom: MetroStation, stationTo: MetroStation) {
 
-        val fromIndex = stationFrom.id
-        val toIndex = stationTo.id
+        val line = LinesData.findLineById(stationFrom.lineId)!!
+        val stationIds = line.stationIds // id всех станций на линии
+
+        // Находим ИНДЕКСЫ станций в списке линии!
+        val fromIndex = stationIds.indexOf(stationFrom.id)
+        val toIndex = stationIds.indexOf(stationTo.id)
+
         val route: Route
         val routePath = mutableListOf<MetroStation>()
         var totalTime = 0
@@ -551,23 +593,28 @@ class MetroBot(private val bot: TelegramBot) {
         if (fromIndex < toIndex) { //прямой поиск
             //собираем станции по порядку
             for (i in fromIndex..toIndex) {
-                val station = StationData.findStationById(i)!!
+                val stationId = stationIds[i]
+                val station = StationData.findStationById(stationId)!!
                 routePath.add(station)
 
                 if (i < toIndex) {
-                    val travelTime = station.neighbors[station.id + 1] ?: 15
+                    val nextStationId = stationIds[i + 1]
+                    val travelTime = station.neighbors[nextStationId] ?: 15
                     totalTime += travelTime
                 }
             }
             route = Route(routePath, totalTime, 0)
         } else {//обратный поиск
             //собираем станции в обратном порядке
-            for (i in toIndex..fromIndex) {
-                val station = StationData.findStationById(i)!!
+            for (i in fromIndex downTo toIndex) {
+                val stationId = stationIds[i]
+
+                val station = StationData.findStationById(stationId)!!
                 routePath.add(station)
 
                 if (i > toIndex) {
-                    val travelTime = station.neighbors[station.id - 1] ?: 9
+                    val prevStationId = stationIds[i - 1]
+                    val travelTime = station.neighbors[prevStationId] ?: 9
                     totalTime += travelTime
                 }
             }
@@ -682,7 +729,7 @@ class MetroBot(private val bot: TelegramBot) {
         val message = SendMessage(
             chatId,
             """
-            ❗ Неудалось распознать запрос!
+            ❗ Не удалось распознать запрос!
              
             💡 Для поиска оптимального маршрута *введите две станции через точку*
 
